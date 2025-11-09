@@ -30,8 +30,8 @@ Control Claude Code from your mobile device. Run Claude Code on your computer, s
 
 ```bash
 # Clone this repository
-git clone https://github.com/yourusername/remotecc.git
-cd remotecc
+git clone https://github.com/cducote/remoteCC.git
+cd remoteCC
 
 # Install server dependencies
 cd server
