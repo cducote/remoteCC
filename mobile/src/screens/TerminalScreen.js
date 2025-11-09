@@ -20,6 +20,8 @@ export default function TerminalScreen({ route, navigation }) {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const scrollViewRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const outputBufferRef = useRef('');
+  const bufferTimerRef = useRef(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -31,14 +33,21 @@ export default function TerminalScreen({ route, navigation }) {
     websocket.on('error', handleError);
     websocket.on('exit', handleExit);
     websocket.on('disconnect', handleServerDisconnect);
+    websocket.on('maxRetriesReached', handleMaxRetriesReached);
 
     // Cleanup on unmount
     return () => {
+      // Clear buffer timer
+      if (bufferTimerRef.current) {
+        clearTimeout(bufferTimerRef.current);
+      }
+
       websocket.off('connected', handleConnected);
       websocket.off('output', handleOutput);
       websocket.off('error', handleError);
       websocket.off('exit', handleExit);
       websocket.off('disconnect', handleServerDisconnect);
+      websocket.off('maxRetriesReached', handleMaxRetriesReached);
       websocket.disconnect();
     };
   }, [url]);
@@ -55,7 +64,21 @@ export default function TerminalScreen({ route, navigation }) {
   };
 
   const handleOutput = (data) => {
-    addOutput(data.data, 'output');
+    // Accumulate output in buffer
+    outputBufferRef.current += data.data;
+
+    // Clear existing timer
+    if (bufferTimerRef.current) {
+      clearTimeout(bufferTimerRef.current);
+    }
+
+    // Set new timer to flush buffer after 500ms of no new output
+    bufferTimerRef.current = setTimeout(() => {
+      if (outputBufferRef.current) {
+        addOutput(outputBufferRef.current, 'output');
+        outputBufferRef.current = '';
+      }
+    }, 500);
   };
 
   const handleError = (data) => {
@@ -72,12 +95,27 @@ export default function TerminalScreen({ route, navigation }) {
     addOutput(`\n🔌 Disconnected from server\n`, 'system');
   };
 
+  const handleMaxRetriesReached = (data) => {
+    Alert.alert(
+      'Connection Lost',
+      'Failed to reconnect to server after 5 attempts.',
+      [
+        {
+          text: 'OK',
+          onPress: () => navigation.goBack()
+        }
+      ]
+    );
+  };
+
   const addOutput = (text, type = 'output') => {
     setOutput(prev => {
-      const newOutput = [...prev, { text, type, id: Date.now() + Math.random() }];
-      // Keep only last 1000 lines
-      if (newOutput.length > 1000) {
-        return newOutput.slice(-1000);
+      const now = Date.now();
+      const newOutput = [...prev, { text, type, id: now, timestamp: now }];
+
+      // Keep only last 50 items to prevent clutter and focus on current context
+      if (newOutput.length > 50) {
+        return newOutput.slice(-50);
       }
       return newOutput;
     });
@@ -85,7 +123,7 @@ export default function TerminalScreen({ route, navigation }) {
 
   const sendInput = () => {
     if (input.trim()) {
-      websocket.sendInput(input + '\n');
+      websocket.sendInput(input + '\r');
       setInput('');
     }
   };
@@ -136,9 +174,14 @@ export default function TerminalScreen({ route, navigation }) {
           <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
           <Text style={styles.statusText}>{connectionStatus}</Text>
         </View>
-        <TouchableOpacity onPress={handleDisconnect} style={styles.disconnectButton}>
-          <Text style={styles.disconnectButtonText}>Disconnect</Text>
-        </TouchableOpacity>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity onPress={() => setOutput([])} style={styles.clearButton}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleDisconnect} style={styles.disconnectButton}>
+            <Text style={styles.disconnectButtonText}>Disconnect</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Terminal Output */}
@@ -172,16 +215,37 @@ export default function TerminalScreen({ route, navigation }) {
         <View style={styles.quickActions}>
           <TouchableOpacity
             style={styles.quickButton}
-            onPress={() => sendQuickAction('y\n')}
+            onPress={() => sendQuickAction('\x1b[A')}
+          >
+            <Text style={styles.quickButtonText}>↑</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickButton}
+            onPress={() => sendQuickAction('\x1b[B')}
+          >
+            <Text style={styles.quickButtonText}>↓</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickButton}
+            onPress={() => sendQuickAction('\r')}
+          >
+            <Text style={styles.quickButtonText}>Enter</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickButton}
+            onPress={() => sendQuickAction('y\r')}
           >
             <Text style={styles.quickButtonText}>y</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.quickButton}
-            onPress={() => sendQuickAction('n\n')}
+            onPress={() => sendQuickAction('n\r')}
           >
             <Text style={styles.quickButtonText}>n</Text>
           </TouchableOpacity>
+        </View>
+        {/* More Actions */}
+        <View style={styles.quickActions}>
           <TouchableOpacity
             style={styles.quickButton}
             onPress={() => sendQuickAction('\t')}
@@ -255,6 +319,22 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     textTransform: 'capitalize',
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  clearButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#FFA500',
+  },
+  clearButtonText: {
+    color: '#FFA500',
+    fontSize: 14,
+    fontWeight: '600',
   },
   disconnectButton: {
     paddingHorizontal: 12,

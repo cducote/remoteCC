@@ -7,7 +7,8 @@ class WebSocketService {
       output: [],
       error: [],
       exit: [],
-      disconnect: []
+      disconnect: [],
+      maxRetriesReached: []
     };
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
@@ -54,14 +55,22 @@ class WebSocketService {
       this._emit('disconnect', { code: event.code, reason: event.reason });
 
       // Try to reconnect if not intentional
-      if (!this.isIntentionalDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.reconnectAttempts++;
-        const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      if (!this.isIntentionalDisconnect) {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+          console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
-        setTimeout(() => {
-          this._connect();
-        }, delay);
+          setTimeout(() => {
+            this._connect();
+          }, delay);
+        } else {
+          // Max retries reached, give up
+          console.log('Max reconnection attempts reached, giving up');
+          this._emit('maxRetriesReached', {
+            message: 'Failed to reconnect after 5 attempts'
+          });
+        }
       }
     };
   }

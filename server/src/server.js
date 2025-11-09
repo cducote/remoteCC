@@ -130,19 +130,22 @@ export class RemoteCCServer {
 
       // Handle PTY output
       this.pty.onData((data) => {
+        // Strip ANSI codes for mobile clients
+        const cleanData = stripAnsi(data);
+
         // Add to buffer
-        this.outputBuffer.push(data);
+        this.outputBuffer.push(cleanData);
         if (this.outputBuffer.length > this.maxBufferSize) {
           this.outputBuffer.shift();
         }
 
-        // Output to local terminal
+        // Output to local terminal (with ANSI codes for colors/formatting)
         process.stdout.write(data);
 
-        // Broadcast to all connected clients
+        // Broadcast to mobile clients (without ANSI codes)
         this.broadcast({
           type: 'output',
-          data: data
+          data: cleanData
         });
       });
 
@@ -150,6 +153,14 @@ export class RemoteCCServer {
       process.stdin.setRawMode(true);
       process.stdin.setEncoding('utf8');
       process.stdin.on('data', (data) => {
+        // Ctrl+C - exit the server
+        if (data === '\x03') {
+          console.log('\n\nReceived Ctrl+C, shutting down...');
+          process.exit(0);
+          return;
+        }
+
+        // Send other input to PTY
         if (this.pty) {
           this.pty.write(data);
         }
