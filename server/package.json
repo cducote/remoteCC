@@ -1,0 +1,25 @@
+{
+  "name": "remotecc-server",
+  "version": "1.0.0",
+  "description": "Remote Claude Code - Terminal streaming server",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "remotecc": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["claude-code", "terminal", "remote", "mobile"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.14.0",
+    "qrcode-terminal": "^0.12.0",
+    "internal-ip": "^7.0.0",
+    "nanoid": "^5.0.0",
+    "strip-ansi": "^7.1.0"
+  }
+}

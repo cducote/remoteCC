@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "RemoteCC",
+    "slug": "remotecc",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.remotecc.app"
+    },
+    "android": {
+      "package": "com.remotecc.app"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow RemoteCC to access your camera to scan QR codes."
+        }
+      ]
+    ]
+  }
+}

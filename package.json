@@ -1,0 +1,25 @@
+{
+  "name": "remotecc",
+  "version": "1.0.0",
+  "description": "Remote Claude Code - Control Claude Code from your mobile device",
+  "scripts": {
+    "setup": "./setup.sh",
+    "server": "cd server && npm start",
+    "mobile": "cd mobile && npm start",
+    "install:server": "cd server && npm install",
+    "install:mobile": "cd mobile && npm install"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/remotecc.git"
+  },
+  "keywords": [
+    "claude-code",
+    "remote",
+    "terminal",
+    "mobile",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT"
+}

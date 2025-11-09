@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(npm install:*)",
+      "Bash(chmod:*)",
+      "Bash(node src/index.js echo \"RemoteCC Test\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
