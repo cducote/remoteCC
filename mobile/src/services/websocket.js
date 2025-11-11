@@ -8,7 +8,8 @@ class WebSocketService {
       error: [],
       exit: [],
       disconnect: [],
-      maxRetriesReached: []
+      maxRetriesReached: [],
+      state: []
     };
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;

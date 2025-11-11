@@ -23,6 +23,10 @@ yarn-debug.*
 yarn-error.*
 *.log
 
+# Logs
+server/logs/
+mobile/logs/
+
 # OS
 .DS_Store
 *.swp

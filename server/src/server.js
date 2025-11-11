@@ -3,7 +3,7 @@ import { spawn } from 'node-pty';
 import qrcode from 'qrcode-terminal';
 import { internalIpV4 } from 'internal-ip';
 import { nanoid } from 'nanoid';
-import stripAnsi from 'strip-ansi';
+import stateLogger from './stateLogger.js';
 
 export class RemoteCCServer {
   constructor(options = {}) {
@@ -16,10 +16,22 @@ export class RemoteCCServer {
     this.clients = new Set();
     this.outputBuffer = [];
     this.maxBufferSize = 100;
+
+    // Frame buffering for mobile clients
+    this.mobileFrameBuffer = '';
+    this.mobileFrameTimer = null;
+    this.inSyncedOutput = false;
+
+    // State tracking
+    this.currentState = 'working'; // 'waiting' or 'working' - default to working!
+    this.stateBuffer = ''; // Buffer to analyze for state detection
   }
 
   async start() {
     try {
+      // Start state logging
+      stateLogger.startSession();
+
       // Get local IP address
       const localIP = await internalIpV4();
       if (!localIP) {
@@ -62,6 +74,12 @@ export class RemoteCCServer {
           message: 'Connected to RemoteCC server'
         }));
 
+        // Send current state
+        ws.send(JSON.stringify({
+          type: 'state',
+          state: this.currentState
+        }));
+
         // Send buffered output to new client
         if (this.outputBuffer.length > 0) {
           ws.send(JSON.stringify({
@@ -79,8 +97,30 @@ export class RemoteCCServer {
         ws.on('message', (data) => {
           try {
             const message = JSON.parse(data.toString());
+            stateLogger.log(`Received message: ${JSON.stringify(message)}`);
+
             if (message.type === 'input' && this.pty) {
+              stateLogger.log(`Writing to PTY: "${message.data}"`);
               this.pty.write(message.data);
+            } else if (message.type === 'forceState') {
+              // Manual state override for testing
+              console.log(`🧪 Force state to: ${message.state}`);
+              this.currentState = message.state;
+              if (message.state === 'waiting') {
+                const parsed = this.parseQuestion(this.stateBuffer);
+                this.broadcast({
+                  type: 'state',
+                  state: message.state,
+                  question: parsed.question,
+                  options: parsed.options,
+                  rawText: parsed.rawText
+                });
+              } else {
+                this.broadcast({
+                  type: 'state',
+                  state: message.state
+                });
+              }
             }
           } catch (err) {
             console.error('Error parsing client message:', err);
@@ -130,11 +170,8 @@ export class RemoteCCServer {
 
       // Handle PTY output
       this.pty.onData((data) => {
-        // Strip ANSI codes for mobile clients
-        const cleanData = stripAnsi(data);
-
-        // Add to buffer
-        this.outputBuffer.push(cleanData);
+        // Add to buffer (keeping ANSI codes for proper terminal emulation)
+        this.outputBuffer.push(data);
         if (this.outputBuffer.length > this.maxBufferSize) {
           this.outputBuffer.shift();
         }
@@ -142,11 +179,8 @@ export class RemoteCCServer {
         // Output to local terminal (with ANSI codes for colors/formatting)
         process.stdout.write(data);
 
-        // Broadcast to mobile clients (without ANSI codes)
-        this.broadcast({
-          type: 'output',
-          data: cleanData
-        });
+        // Handle mobile frame buffering
+        this.handleMobileOutput(data);
       });
 
       // Handle local keyboard input
@@ -188,6 +222,194 @@ export class RemoteCCServer {
         type: 'error',
         message: `Failed to start ${this.command}: ${err.message}`
       });
+    }
+  }
+
+  handleMobileOutput(data) {
+    // Detect synchronized output mode markers
+    if (data.includes('\x1b[?2026h')) {
+      this.inSyncedOutput = true;
+    }
+
+    // Accumulate data in buffer
+    this.mobileFrameBuffer += data;
+
+    // Clear existing timer
+    if (this.mobileFrameTimer) {
+      clearTimeout(this.mobileFrameTimer);
+    }
+
+    // Check if sync block ended
+    if (data.includes('\x1b[?2026l')) {
+      this.inSyncedOutput = false;
+      // Send immediately when sync block completes
+      this.flushMobileBuffer();
+    } else {
+      // Set timer to flush buffer after 100ms of inactivity
+      this.mobileFrameTimer = setTimeout(() => {
+        this.flushMobileBuffer();
+      }, 100);
+    }
+  }
+
+  flushMobileBuffer() {
+    if (this.mobileFrameBuffer && this.clients.size > 0) {
+      // Detect state before sending (but don't send output updates)
+      this.detectState(this.mobileFrameBuffer);
+
+      // Don't send output to mobile - we use virtual cursor instead
+      // Always clear buffer regardless
+      this.mobileFrameBuffer = '';
+    }
+  }
+
+  parseQuestion(text) {
+    // Strip ANSI codes AND control characters
+    const stripped = text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r/g, '');
+
+    // Extract question (text ending with ?)
+    const questionMatch = stripped.match(/([^\n]*\?[^\n]*)/);
+    const question = questionMatch ? questionMatch[1].trim() : null;
+
+    // Look for "What would you like to work on" style questions
+    const workOnMatch = stripped.match(/What would you like[^\n]*\?/i);
+    const finalQuestion = workOnMatch ? workOnMatch[0] : question;
+
+    // Parse menu options (format: "1. Title" or "  1. Title" with optional description on next line)
+    const options = [];
+    const lines = stripped.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Match: optional spaces, optional ❯, optional spaces, number with . or ), title
+      const optionMatch = line.match(/^\s*(❯)?\s*(\d+)[\.\)]\s+(.+)$/);
+
+      if (optionMatch) {
+        const selected = !!optionMatch[1];
+        const number = parseInt(optionMatch[2]);
+        const title = optionMatch[3].trim();
+
+        // Check next line for description (indented text)
+        let description = null;
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1].trim();
+          // If next line doesn't start with a number or ❯, and isn't empty, it's probably a description
+          if (nextLine && !nextLine.match(/^(❯)?\s*\d+[\.\)]/) && nextLine.length > 0) {
+            description = nextLine;
+          }
+        }
+
+        options.push({
+          number,
+          title,
+          description,
+          selected
+        });
+      }
+    }
+
+    stateLogger.log(`Parsed ${options.length} options from ${lines.length} lines`);
+    if (options.length > 0) {
+      stateLogger.log(`First option: ${JSON.stringify(options[0])}`);
+    }
+
+    return {
+      question: finalQuestion,
+      options: options.length > 0 ? options : null,
+      rawText: stripped
+    };
+  }
+
+  detectState(data) {
+    // Strip ANSI codes for state detection
+    const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
+    // Add to state buffer and keep last 1000 chars for better context
+    this.stateBuffer += stripped;
+    if (this.stateBuffer.length > 1000) {
+      this.stateBuffer = this.stateBuffer.slice(-1000);
+    }
+
+    const lowerBuffer = this.stateBuffer.toLowerCase();
+
+    stateLogger.log(`Buffer (last 200): "${this.stateBuffer.slice(-200)}"`);
+    stateLogger.log(`Current state: ${this.currentState}`);
+
+    // Patterns indicating WORKING state (Claude is processing)
+    // Check these FIRST with higher priority
+    const workingPatterns = [
+      /\+[a-z]+\.\.\./i,                    // Progress indicators like "+Hashing..."
+      /loading\.\.\./i,                     // "Loading..."
+      /processing\.\.\./i,                  // "Processing..."
+      /analyzing\.\.\./i,                   // "Analyzing..."
+      /thinking\.\.\./i,                    // "Thinking..."
+      /searching\.\.\./i,                   // "Searching..."
+      /reading\.\.\./i,                     // "Reading..."
+      /writing\.\.\./i,                     // "Writing..."
+      /\[=+\]/,                             // Progress bars [====] only
+    ];
+
+    // Check for working patterns first
+    let newState = this.currentState;
+    for (const pattern of workingPatterns) {
+      if (pattern.test(lowerBuffer)) {
+        stateLogger.log(`Matched WORKING pattern: ${pattern}`);
+        newState = 'working';
+        break;
+      }
+    }
+
+    // Always check waiting patterns - they override working patterns
+    // Patterns indicating WAITING state (Claude asking for input)
+    const waitingPatterns = [
+      /\?\s*$/,                              // Ends with question mark
+      />\s*$/,                               // Ends with prompt
+      /\d+[\.\)]\s+[a-z]/i,                  // Menu options like "1. option" or "1) option"
+      /❯/,                                   // Selection indicator
+      /\(y\/n\)/i,                          // Yes/no prompts
+      /press\s+enter/i,                     // "Press Enter" prompts
+      /select\s+an\s+option/i,              // "Select an option"
+      /what\s+would\s+you\s+like/i,         // "What would you like..."
+      /waiting\s+for\s+(input|you)/i,       // "Waiting for input/you"
+      /please\s+(choose|select|enter|type)/i,  // "Please choose/select/enter/type"
+      /would\s+you\s+like/i,                // "Would you like..."
+      /do\s+you\s+want/i,                   // "Do you want..."
+      /how\s+(would|should|can)/i,          // "How would/should/can..."
+      /type\s+something/i,                  // "Type something"
+    ];
+
+    for (const pattern of waitingPatterns) {
+      if (pattern.test(lowerBuffer)) {
+        stateLogger.log(`Matched WAITING pattern: ${pattern} - OVERRIDING to waiting`);
+        newState = 'waiting';
+        break;
+      }
+    }
+
+    // If state changed, broadcast it
+    if (newState !== this.currentState) {
+      stateLogger.log(`STATE CHANGED: ${this.currentState} → ${newState}`);
+      const previousState = this.currentState;
+      this.currentState = newState;
+
+      // If transitioning TO waiting state, parse the question
+      if (newState === 'waiting') {
+        const parsed = this.parseQuestion(this.stateBuffer);
+        stateLogger.log(`Parsed question: ${JSON.stringify(parsed, null, 2)}`);
+
+        this.broadcast({
+          type: 'state',
+          state: newState,
+          question: parsed.question,
+          options: parsed.options,
+          rawText: parsed.rawText
+        });
+      } else {
+        this.broadcast({
+          type: 'state',
+          state: newState
+        });
+      }
     }
   }
 

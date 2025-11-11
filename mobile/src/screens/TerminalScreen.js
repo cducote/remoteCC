@@ -1,27 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
-  TextInput,
   TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import websocket from '../services/websocket';
+import ClaudeLoadingScreen from '../components/ClaudeLoadingScreen';
+import ClaudeQuestionScreen from '../components/ClaudeQuestionScreen';
 
 export default function TerminalScreen({ route, navigation }) {
   const { url } = route.params;
-  const [output, setOutput] = useState([]);
-  const [input, setInput] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('connecting');
-  const scrollViewRef = useRef(null);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const outputBufferRef = useRef('');
-  const bufferTimerRef = useRef(null);
+  const [claudeState, setClaudeState] = useState('working'); // 'waiting' or 'working'
+  const [questionData, setQuestionData] = useState(null); // Parsed question and options
 
   useEffect(() => {
     // Connect to WebSocket
@@ -34,65 +28,40 @@ export default function TerminalScreen({ route, navigation }) {
     websocket.on('exit', handleExit);
     websocket.on('disconnect', handleServerDisconnect);
     websocket.on('maxRetriesReached', handleMaxRetriesReached);
+    websocket.on('state', handleStateChange);
 
     // Cleanup on unmount
     return () => {
-      // Clear buffer timer
-      if (bufferTimerRef.current) {
-        clearTimeout(bufferTimerRef.current);
-      }
-
       websocket.off('connected', handleConnected);
       websocket.off('output', handleOutput);
       websocket.off('error', handleError);
       websocket.off('exit', handleExit);
       websocket.off('disconnect', handleServerDisconnect);
       websocket.off('maxRetriesReached', handleMaxRetriesReached);
+      websocket.off('state', handleStateChange);
       websocket.disconnect();
     };
   }, [url]);
 
-  useEffect(() => {
-    if (autoScroll && scrollViewRef.current) {
-      scrollViewRef.current.scrollToEnd({ animated: false });
-    }
-  }, [output, autoScroll]);
-
   const handleConnected = (data) => {
     setConnectionStatus('connected');
-    addOutput(`\n✅ ${data.message}\n`, 'system');
   };
 
   const handleOutput = (data) => {
-    // Accumulate output in buffer
-    outputBufferRef.current += data.data;
-
-    // Clear existing timer
-    if (bufferTimerRef.current) {
-      clearTimeout(bufferTimerRef.current);
-    }
-
-    // Set new timer to flush buffer after 500ms of no new output
-    bufferTimerRef.current = setTimeout(() => {
-      if (outputBufferRef.current) {
-        addOutput(outputBufferRef.current, 'output');
-        outputBufferRef.current = '';
-      }
-    }, 500);
+    // Output is ignored - we only show parsed questions
   };
 
   const handleError = (data) => {
     setConnectionStatus('error');
-    addOutput(`\n❌ Error: ${data.message}\n`, 'error');
+    Alert.alert('Error', data.message);
   };
 
   const handleExit = (data) => {
-    addOutput(`\n💀 Process exited (code: ${data.exitCode})\n`, 'system');
+    Alert.alert('Process Exited', `Claude Code exited with code ${data.exitCode}`);
   };
 
   const handleServerDisconnect = (data) => {
     setConnectionStatus('disconnected');
-    addOutput(`\n🔌 Disconnected from server\n`, 'system');
   };
 
   const handleMaxRetriesReached = (data) => {
@@ -108,34 +77,31 @@ export default function TerminalScreen({ route, navigation }) {
     );
   };
 
-  const addOutput = (text, type = 'output') => {
-    setOutput(prev => {
-      const now = Date.now();
-      const newOutput = [...prev, { text, type, id: now, timestamp: now }];
+  const handleStateChange = (data) => {
+    setClaudeState(data.state);
 
-      // Keep only last 50 items to prevent clutter and focus on current context
-      if (newOutput.length > 50) {
-        return newOutput.slice(-50);
-      }
-      return newOutput;
-    });
-  };
-
-  const sendInput = () => {
-    if (input.trim()) {
-      websocket.sendInput(input + '\r');
-      setInput('');
+    // If waiting state, extract question data
+    if (data.state === 'waiting') {
+      setQuestionData({
+        question: data.question,
+        options: data.options,
+        rawText: data.rawText
+      });
+    } else {
+      setQuestionData(null);
     }
   };
 
-  const sendQuickAction = (text) => {
-    websocket.sendInput(text);
+  const handleArrowUp = () => {
+    websocket.sendInput('\x1b[A'); // Up arrow
   };
 
-  const handleScroll = (event) => {
-    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-    const isAtBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 20;
-    setAutoScroll(isAtBottom);
+  const handleArrowDown = () => {
+    websocket.sendInput('\x1b[B'); // Down arrow
+  };
+
+  const handleEnter = () => {
+    websocket.sendInput('\r'); // Enter key
   };
 
   const getStatusColor = () => {
@@ -174,119 +140,24 @@ export default function TerminalScreen({ route, navigation }) {
           <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
           <Text style={styles.statusText}>{connectionStatus}</Text>
         </View>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity onPress={() => setOutput([])} style={styles.clearButton}>
-            <Text style={styles.clearButtonText}>Clear</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleDisconnect} style={styles.disconnectButton}>
-            <Text style={styles.disconnectButtonText}>Disconnect</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={handleDisconnect} style={styles.disconnectButton}>
+          <Text style={styles.disconnectButtonText}>Disconnect</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Terminal Output */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.terminalScroll}
-        contentContainerStyle={styles.terminalContent}
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
-      >
-        {output.map((item) => (
-          <Text
-            key={item.id}
-            style={[
-              styles.terminalText,
-              item.type === 'system' && styles.systemText,
-              item.type === 'error' && styles.errorText,
-            ]}
-          >
-            {item.text}
-          </Text>
-        ))}
-      </ScrollView>
-
-      {/* Input Area */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-      >
-        {/* Quick Actions */}
-        <View style={styles.quickActions}>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\x1b[A')}
-          >
-            <Text style={styles.quickButtonText}>↑</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\x1b[B')}
-          >
-            <Text style={styles.quickButtonText}>↓</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\r')}
-          >
-            <Text style={styles.quickButtonText}>Enter</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('y\r')}
-          >
-            <Text style={styles.quickButtonText}>y</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('n\r')}
-          >
-            <Text style={styles.quickButtonText}>n</Text>
-          </TouchableOpacity>
-        </View>
-        {/* More Actions */}
-        <View style={styles.quickActions}>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\t')}
-          >
-            <Text style={styles.quickButtonText}>Tab</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\x03')}
-          >
-            <Text style={styles.quickButtonText}>Ctrl+C</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickButton}
-            onPress={() => sendQuickAction('\x04')}
-          >
-            <Text style={styles.quickButtonText}>Ctrl+D</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Text Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            style={styles.input}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Type command..."
-            placeholderTextColor="#666"
-            onSubmitEditing={sendInput}
-            returnKeyType="send"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TouchableOpacity
-            style={styles.sendButton}
-            onPress={sendInput}
-          >
-            <Text style={styles.sendButtonText}>Send</Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
+      {/* Content - show loading when working, question screen when waiting */}
+      {claudeState === 'working' ? (
+        <ClaudeLoadingScreen />
+      ) : (
+        <ClaudeQuestionScreen
+          question={questionData?.question}
+          rawText={questionData?.rawText || 'Waiting for Claude...'}
+          options={questionData?.options}
+          onArrowUp={handleArrowUp}
+          onArrowDown={handleArrowDown}
+          onEnter={handleEnter}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -320,22 +191,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textTransform: 'capitalize',
   },
-  headerButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  clearButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#FFA500',
-  },
-  clearButtonText: {
-    color: '#FFA500',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   disconnectButton: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -347,73 +202,5 @@ const styles = StyleSheet.create({
     color: '#F44336',
     fontSize: 14,
     fontWeight: '600',
-  },
-  terminalScroll: {
-    flex: 1,
-  },
-  terminalContent: {
-    padding: 12,
-  },
-  terminalText: {
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    fontSize: 12,
-    color: '#fff',
-    lineHeight: 18,
-  },
-  systemText: {
-    color: '#4CAF50',
-  },
-  errorText: {
-    color: '#F44336',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-    gap: 8,
-  },
-  quickButton: {
-    flex: 1,
-    backgroundColor: '#333',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderRadius: 4,
-    alignItems: 'center',
-  },
-  quickButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    padding: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-    gap: 8,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: '#1a1a1a',
-    color: '#fff',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    fontSize: 14,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  sendButton: {
-    backgroundColor: '#4CAF50',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-    justifyContent: 'center',
-  },
-  sendButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
   },
 });
